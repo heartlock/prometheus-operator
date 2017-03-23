@@ -23,39 +23,30 @@ import (
 )
 
 const (
-	TPRGroup   = "monitoring.coreos.com"
+	TPRGroup   = "auth.hyper.com"
 	TPRVersion = "v1alpha1"
 )
 
-type MonitoringV1alpha1Interface interface {
+type AuthV1alpha1Interface interface {
 	RESTClient() rest.Interface
-	PrometheusesGetter
-	AlertmanagersGetter
-	ServiceMonitorsGetter
+	TenantsGetter
+	//TODO: add networkgetter
 }
 
-type MonitoringV1alpha1Client struct {
+type AuthV1alpha1Client struct {
 	restClient    rest.Interface
 	dynamicClient *dynamic.Client
 }
 
-func (c *MonitoringV1alpha1Client) Prometheuses(namespace string) PrometheusInterface {
-	return newPrometheuses(c.restClient, c.dynamicClient, namespace)
+func (c *AuthV1alpha1Client) Tenants(namespace string) TenantInterface {
+	return newTenants(c.restClient, c.dynamicClient, namespace)
 }
 
-func (c *MonitoringV1alpha1Client) Alertmanagers(namespace string) AlertmanagerInterface {
-	return newAlertmanagers(c.restClient, c.dynamicClient, namespace)
-}
-
-func (c *MonitoringV1alpha1Client) ServiceMonitors(namespace string) ServiceMonitorInterface {
-	return newServiceMonitors(c.restClient, c.dynamicClient, namespace)
-}
-
-func (c *MonitoringV1alpha1Client) RESTClient() rest.Interface {
+func (c *AuthV1alpha1Client) RESTClient() rest.Interface {
 	return c.restClient
 }
 
-func NewForConfig(c *rest.Config) (*MonitoringV1alpha1Client, error) {
+func NewForConfig(c *rest.Config) (*AuthV1alpha1Client, error) {
 	config := *c
 	setConfigDefaults(&config)
 	client, err := rest.RESTClientFor(&config)
@@ -68,7 +59,7 @@ func NewForConfig(c *rest.Config) (*MonitoringV1alpha1Client, error) {
 		return nil, err
 	}
 
-	return &MonitoringV1alpha1Client{client, dynamicClient}, nil
+	return &AuthV1alpha1Client{client, dynamicClient}, nil
 }
 
 func setConfigDefaults(config *rest.Config) {

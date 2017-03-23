@@ -17,7 +17,6 @@ package k8sutil
 import (
 	"fmt"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/pkg/errors"
@@ -27,6 +26,7 @@ import (
 	clientv1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/pkg/api/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // WaitForTPRReady waits for a third party resource to be available
@@ -74,26 +74,10 @@ func PodRunningAndReady(pod v1.Pod) (bool, error) {
 	return false, nil
 }
 
-func NewClusterConfig(host string, tlsInsecure bool, tlsConfig *rest.TLSClientConfig) (*rest.Config, error) {
-	var cfg *rest.Config
-	var err error
-
-	if len(host) == 0 {
-		if cfg, err = rest.InClusterConfig(); err != nil {
-			return nil, err
-		}
-	} else {
-		cfg = &rest.Config{
-			Host: host,
-		}
-		hostURL, err := url.Parse(host)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing host url %s : %v", host, err)
-		}
-		if hostURL.Scheme == "https" {
-			cfg.TLSClientConfig = *tlsConfig
-			cfg.Insecure = tlsInsecure
-		}
+func NewClusterConfig(host, kubeConfig string) (*rest.Config, error) {
+	cfg, err := clientcmd.BuildConfigFromFlags(host, kubeConfig)
+	if err != nil {
+		return nil, err
 	}
 	cfg.QPS = 100
 	cfg.Burst = 100

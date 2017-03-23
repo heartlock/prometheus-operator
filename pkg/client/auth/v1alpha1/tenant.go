@@ -27,36 +27,36 @@ import (
 )
 
 const (
-	TPRPrometheusesKind = "Prometheus"
-	TPRPrometheusName   = "prometheuses"
+	TPRTenantsKind = "Tenant"
+	TPRTenantName  = "tenants"
 )
 
-type PrometheusesGetter interface {
-	Prometheuses(namespace string) PrometheusInterface
+type TenantsGetter interface {
+	Tenants(namespace string) TenantInterface
 }
 
-type PrometheusInterface interface {
-	Create(*Prometheus) (*Prometheus, error)
-	Get(name string) (*Prometheus, error)
-	Update(*Prometheus) (*Prometheus, error)
+type TenantInterface interface {
+	Create(*Tenant) (*Tenant, error)
+	Get(name string) (*Tenant, error)
+	Update(*Tenant) (*Tenant, error)
 	Delete(name string, options *v1.DeleteOptions) error
 	List(opts metav1.ListOptions) (runtime.Object, error)
 	Watch(opts metav1.ListOptions) (watch.Interface, error)
 }
 
-type prometheuses struct {
+type tenants struct {
 	restClient rest.Interface
 	client     *dynamic.ResourceClient
 	ns         string
 }
 
-func newPrometheuses(r rest.Interface, c *dynamic.Client, namespace string) *prometheuses {
-	return &prometheuses{
+func newTenants(r rest.Interface, c *dynamic.Client, namespace string) *tenants {
+	return &tenants{
 		r,
 		c.Resource(
 			&metav1.APIResource{
-				Kind:       TPRPrometheusesKind,
-				Name:       TPRPrometheusName,
+				Kind:       TPRTenantsKind,
+				Name:       TPRTenantName,
 				Namespaced: true,
 			},
 			namespace,
@@ -65,8 +65,8 @@ func newPrometheuses(r rest.Interface, c *dynamic.Client, namespace string) *pro
 	}
 }
 
-func (p *prometheuses) Create(o *Prometheus) (*Prometheus, error) {
-	up, err := UnstructuredFromPrometheus(o)
+func (p *tenants) Create(o *Tenant) (*Tenant, error) {
+	up, err := UnstructuredFromTenant(o)
 	if err != nil {
 		return nil, err
 	}
@@ -76,19 +76,19 @@ func (p *prometheuses) Create(o *Prometheus) (*Prometheus, error) {
 		return nil, err
 	}
 
-	return PrometheusFromUnstructured(up)
+	return TenantFromUnstructured(up)
 }
 
-func (p *prometheuses) Get(name string) (*Prometheus, error) {
+func (p *tenants) Get(name string) (*Tenant, error) {
 	obj, err := p.client.Get(name)
 	if err != nil {
 		return nil, err
 	}
-	return PrometheusFromUnstructured(obj)
+	return TenantFromUnstructured(obj)
 }
 
-func (p *prometheuses) Update(o *Prometheus) (*Prometheus, error) {
-	up, err := UnstructuredFromPrometheus(o)
+func (p *tenants) Update(o *Tenant) (*Tenant, error) {
+	up, err := UnstructuredFromTenant(o)
 	if err != nil {
 		return nil, err
 	}
@@ -98,17 +98,17 @@ func (p *prometheuses) Update(o *Prometheus) (*Prometheus, error) {
 		return nil, err
 	}
 
-	return PrometheusFromUnstructured(up)
+	return TenantFromUnstructured(up)
 }
 
-func (p *prometheuses) Delete(name string, options *v1.DeleteOptions) error {
+func (p *tenants) Delete(name string, options *v1.DeleteOptions) error {
 	return p.client.Delete(name, options)
 }
 
-func (p *prometheuses) List(opts metav1.ListOptions) (runtime.Object, error) {
+func (p *tenants) List(opts metav1.ListOptions) (runtime.Object, error) {
 	req := p.restClient.Get().
 		Namespace(p.ns).
-		Resource("prometheuses").
+		Resource("tenants").
 		// VersionedParams(&options, v1.ParameterCodec)
 		FieldsSelectorParam(nil)
 
@@ -116,45 +116,45 @@ func (p *prometheuses) List(opts metav1.ListOptions) (runtime.Object, error) {
 	if err != nil {
 		return nil, err
 	}
-	var prom PrometheusList
+	var prom TenantList
 	return &prom, json.Unmarshal(b, &prom)
 }
 
-func (p *prometheuses) Watch(opts metav1.ListOptions) (watch.Interface, error) {
+func (p *tenants) Watch(opts metav1.ListOptions) (watch.Interface, error) {
 	r, err := p.restClient.Get().
 		Prefix("watch").
 		Namespace(p.ns).
-		Resource("prometheuses").
+		Resource("tenants").
 		// VersionedParams(&options, v1.ParameterCodec).
 		FieldsSelectorParam(nil).
 		Stream()
 	if err != nil {
 		return nil, err
 	}
-	return watch.NewStreamWatcher(&prometheusDecoder{
+	return watch.NewStreamWatcher(&tenantDecoder{
 		dec:   json.NewDecoder(r),
 		close: r.Close,
 	}), nil
 }
 
-// PrometheusFromUnstructured unmarshals a Prometheus object from dynamic client's unstructured
-func PrometheusFromUnstructured(r *unstructured.Unstructured) (*Prometheus, error) {
+// TenantFromUnstructured unmarshals a Tenant object from dynamic client's unstructured
+func TenantFromUnstructured(r *unstructured.Unstructured) (*Tenant, error) {
 	b, err := json.Marshal(r.Object)
 	if err != nil {
 		return nil, err
 	}
-	var p Prometheus
+	var p Tenant
 	if err := json.Unmarshal(b, &p); err != nil {
 		return nil, err
 	}
-	p.TypeMeta.Kind = TPRPrometheusesKind
+	p.TypeMeta.Kind = TPRTenantsKind
 	p.TypeMeta.APIVersion = TPRGroup + "/" + TPRVersion
 	return &p, nil
 }
 
-// UnstructuredFromPrometheus marshals a Prometheus object into dynamic client's unstructured
-func UnstructuredFromPrometheus(p *Prometheus) (*unstructured.Unstructured, error) {
-	p.TypeMeta.Kind = TPRPrometheusesKind
+// UnstructuredFromTenant marshals a Tenant object into dynamic client's unstructured
+func UnstructuredFromTenant(p *Tenant) (*unstructured.Unstructured, error) {
+	p.TypeMeta.Kind = TPRTenantsKind
 	p.TypeMeta.APIVersion = TPRGroup + "/" + TPRVersion
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -167,19 +167,19 @@ func UnstructuredFromPrometheus(p *Prometheus) (*unstructured.Unstructured, erro
 	return &r, nil
 }
 
-type prometheusDecoder struct {
+type tenantDecoder struct {
 	dec   *json.Decoder
 	close func() error
 }
 
-func (d *prometheusDecoder) Close() {
+func (d *tenantDecoder) Close() {
 	d.close()
 }
 
-func (d *prometheusDecoder) Decode() (action watch.EventType, object runtime.Object, err error) {
+func (d *tenantDecoder) Decode() (action watch.EventType, object runtime.Object, err error) {
 	var e struct {
 		Type   watch.EventType
-		Object Prometheus
+		Object Tenant
 	}
 	if err := d.dec.Decode(&e); err != nil {
 		return watch.Error, nil, err
