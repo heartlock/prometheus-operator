@@ -18,12 +18,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/coreos/prometheus-operator/pkg/client/auth/v1alpha1"
 	"github.com/coreos/prometheus-operator/pkg/k8sutil"
+	"github.com/coreos/prometheus-operator/pkg/rbacmanager/rbac"
 	"github.com/coreos/prometheus-operator/pkg/tenant"
 
 	"github.com/go-kit/kit/log"
-	"github.com/pkg/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/api"
@@ -33,8 +32,6 @@ import (
 )
 
 const (
-	tprAlertmanager = "alertmanager." + v1alpha1.TPRGroup
-
 	resyncPeriod = 5 * time.Minute
 )
 
@@ -42,7 +39,6 @@ const (
 // monitoring configurations.
 type Controller struct {
 	kclient *kubernetes.Clientset
-	mclient *v1alpha1.AuthV1alpha1Client
 	logger  log.Logger
 
 	nsInf cache.SharedIndexInformer
@@ -54,21 +50,15 @@ type Controller struct {
 func New(conf tenant.Config, logger log.Logger) (*Controller, error) {
 	cfg, err := k8sutil.NewClusterConfig(conf.Host, conf.KubeConfig)
 	if err != nil {
-		return nil, errors.Wrap(err, "instantiating cluster config failed")
+		return nil, fmt.Errorf("init cluster config failed: %v", err)
 	}
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, errors.Wrap(err, "instantiating kubernetes client failed")
-	}
-
-	mclient, err := v1alpha1.NewForConfig(cfg)
-	if err != nil {
-		return nil, errors.Wrap(err, "instantiating monitoring client failed")
+		return nil, fmt.Errorf("init kubernetes client failed: %v", err)
 	}
 
 	o := &Controller{
 		kclient: client,
-		mclient: mclient,
 		logger:  logger,
 		queue:   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "rbacmanager"),
 	}
@@ -95,7 +85,7 @@ func (c *Controller) Run(stopc <-chan struct{}) error {
 	go func() {
 		v, err := c.kclient.Discovery().ServerVersion()
 		if err != nil {
-			errChan <- errors.Wrap(err, "communicating with server failed")
+			errChan <- fmt.Errorf("communicating with server failed: %v", err)
 			return
 		}
 		c.logger.Log("msg", "connection established", "cluster-version", v)
@@ -167,7 +157,7 @@ func (c *Controller) processNextWorkItem() bool {
 		return true
 	}
 
-	utilruntime.HandleError(errors.Wrap(err, fmt.Sprintf("Sync %q failed", key)))
+	utilruntime.HandleError(fmt.Errorf("Sync %q failed: %v", key, err))
 	c.queue.AddRateLimited(key)
 
 	return true
@@ -194,6 +184,11 @@ func (c *Controller) handleNamespaceDelete(obj interface{}) {
 }
 
 func (c *Controller) handleNamespaceUpdate(old, cur interface{}) {
+	oldns := old.(*v1.Namespace)
+	curns := cur.(*v1.Namespace)
+	if oldns.ResourceVersion == curns.ResourceVersion {
+		return
+	}
 	key, ok := c.keyFunc(cur)
 	if !ok {
 		return
@@ -210,19 +205,47 @@ func (c *Controller) sync(key string) error {
 	}
 	if !exists {
 		//TODO: delete rbac policy related ns
+		c.logger.Log("msg", "delete rbac policy related ns", "key", key)
 		return nil
 	}
 
 	ns := obj.(*v1.Namespace)
-	fmt.Println(ns)
-	// if tenant not specified do nothing
-	if _, ok := ns.Annotations["tenant"]; !ok {
+
+	c.logger.Log("msg", "syncrbac", "key", key)
+	err = c.syncRbac(ns)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Controller) syncRbac(ns *v1.Namespace) error {
+	if ns.DeletionTimestamp == nil {
 		return nil
 	}
-	//rbacClient := c.kclient.Rbac()
+	tenant, ok := ns.Annotations["tenant"]
+	if !ok {
+		return nil
+	}
+	rbacClient := c.kclient.Rbac()
 
-	c.logger.Log("msg", "sync alertmanager", "key", key)
+	// create generate role and roleBinding for tenant
+	role := rbac.GenerateRoleByNamespace(tenant)
+	roleBinding := rbac.GenerateRoleBindingByNamespace(tenant)
 
-	//TODO: sync rbac
+	// create role and rolebinding for tenant
+	roleRes, err := rbacClient.Roles(tenant).Create(role)
+	if err != nil {
+		return err
+	}
+	fmt.Sprintf("Create role: %v for tenant: %v in namespace: %v", roleRes, tenant, ns.Name)
+
+	roleBindingRes, err := rbacClient.RoleBindings(tenant).Create(roleBinding)
+	if err != nil {
+		return err
+	}
+	fmt.Sprintf("Create rolebinding: %v for tenant: %v in namespace: %v", roleBindingRes, tenant, ns.Name)
+
 	return nil
 }

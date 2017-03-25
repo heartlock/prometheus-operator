@@ -38,6 +38,7 @@ func init() {
 
 	flagset.StringVar(&cfg.Host, "apiserver", "", "API Server addr, e.g. ' - NOT RECOMMENDED FOR PRODUCTION - http://127.0.0.1:8080'. Omit parameter to run in on-cluster mode and utilize the service account token.")
 	flagset.StringVar(&cfg.KubeConfig, "kubeconfig", "", "- path to kubeconfig")
+	flagset.StringVar(&cfg.CloudConfig, "cloudconfig", "", "- path to cloudconfig")
 
 	flagset.Parse(os.Args[1:])
 }

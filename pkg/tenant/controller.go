@@ -16,19 +16,21 @@ package tenant
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/coreos/prometheus-operator/pkg/client/auth/v1alpha1"
 	"github.com/coreos/prometheus-operator/pkg/k8sutil"
+	"github.com/coreos/prometheus-operator/pkg/openstack"
+	"github.com/coreos/prometheus-operator/pkg/rbacmanager/rbac"
 
 	"github.com/go-kit/kit/log"
-	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	apimetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/api"
+	v1 "k8s.io/client-go/pkg/api/v1"
 	extensionsobj "k8s.io/client-go/pkg/apis/extensions/v1beta1"
 	"k8s.io/client-go/pkg/util/workqueue"
 	"k8s.io/client-go/tools/cache"
@@ -40,12 +42,12 @@ const (
 	resyncPeriod = 5 * time.Minute
 )
 
-// TenantController manages lify cycle of Prometheus deployments and
-// monitoring configurations.
+// TenantController manages lify cycle of Tenant.
 type TenantController struct {
-	kclient *kubernetes.Clientset
-	mclient *v1alpha1.AuthV1alpha1Client
-	logger  log.Logger
+	kclient  *kubernetes.Clientset
+	tclient  *v1alpha1.AuthV1alpha1Client
+	osclient *openstack.Client
+	logger   log.Logger
 
 	tenInf cache.SharedIndexInformer
 
@@ -57,40 +59,46 @@ type TenantController struct {
 
 // Config defines configuration parameters for the TenantController.
 type Config struct {
-	Host       string
-	KubeConfig string
+	Host        string
+	KubeConfig  string
+	CloudConfig string
 }
 
 // New creates a new controller.
 func New(conf Config, logger log.Logger) (*TenantController, error) {
 	cfg, err := k8sutil.NewClusterConfig(conf.Host, conf.KubeConfig)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("init cluster config failed: %v", err)
+	}
+	openStackClient, err := openstack.NewClient(conf.CloudConfig)
+	if err != nil {
+		return nil, fmt.Errorf("init openstack client failed: %v", err)
 	}
 
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("init kubernetes client failed: %v", err)
 	}
 
-	mclient, err := v1alpha1.NewForConfig(cfg)
+	tclient, err := v1alpha1.NewForConfig(cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("init restclient for tenant failed: %v", err)
 	}
 
 	c := &TenantController{
-		kclient: client,
-		mclient: mclient,
-		logger:  logger,
-		queue:   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "prometheus"),
-		host:    cfg.Host,
-		config:  conf,
+		kclient:  client,
+		tclient:  tclient,
+		osclient: openStackClient,
+		logger:   logger,
+		queue:    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "tenant"),
+		host:     cfg.Host,
+		config:   conf,
 	}
 
 	c.tenInf = cache.NewSharedIndexInformer(
 		&cache.ListWatch{
-			ListFunc:  mclient.Tenants(api.NamespaceAll).List,
-			WatchFunc: mclient.Tenants(api.NamespaceAll).Watch,
+			ListFunc:  tclient.Tenants(api.NamespaceAll).List,
+			WatchFunc: tclient.Tenants(api.NamespaceAll).Watch,
 		},
 		&v1alpha1.Tenant{}, resyncPeriod, cache.Indexers{},
 	)
@@ -111,15 +119,22 @@ func (c *TenantController) Run(stopc <-chan struct{}) error {
 	go func() {
 		v, err := c.kclient.Discovery().ServerVersion()
 		if err != nil {
-			errChan <- errors.Wrap(err, "communicating with server failed")
+			errChan <- fmt.Errorf("communicating with server failed: %v", err)
 			return
 		}
 		c.logger.Log("msg", "connection established", "cluster-version", v)
 
 		if err := c.createTPRs(); err != nil {
-			errChan <- errors.Wrap(err, "creating TPRs failed")
+			errChan <- fmt.Errorf("creating TPRs failed: %v", err)
 			return
 		}
+
+		// Create clusterRole
+		if err = c.createClusterRoles(); err != nil {
+			errChan <- fmt.Errorf("creating clusterrole failed: %v", err)
+			return
+		}
+
 		errChan <- nil
 	}()
 
@@ -156,7 +171,7 @@ func (c *TenantController) handleAddTenant(obj interface{}) {
 		return
 	}
 
-	c.logger.Log("msg", "Prometheus added", "key", key)
+	c.logger.Log("msg", "Tenant added", "key", key)
 	c.enqueue(key)
 }
 
@@ -166,7 +181,7 @@ func (c *TenantController) handleDeleteTenant(obj interface{}) {
 		return
 	}
 
-	c.logger.Log("msg", "Prometheus deleted", "key", key)
+	c.logger.Log("msg", "Tenant deleted", "key", key)
 	c.enqueue(key)
 }
 
@@ -176,22 +191,8 @@ func (c *TenantController) handleUpdateTenant(old, cur interface{}) {
 		return
 	}
 
-	c.logger.Log("msg", "Prometheus updated", "key", key)
+	c.logger.Log("msg", "Tenant updated", "key", key)
 	c.enqueue(key)
-}
-
-func (c *TenantController) getObject(obj interface{}) (apimetav1.Object, bool) {
-	ts, ok := obj.(cache.DeletedFinalStateUnknown)
-	if ok {
-		obj = ts.Obj
-	}
-
-	o, err := meta.Accessor(obj)
-	if err != nil {
-		c.logger.Log("msg", "get object failed", "err", err)
-		return nil, false
-	}
-	return o, true
 }
 
 // enqueue adds a key to the queue. If obj is a key already it gets added directly.
@@ -232,7 +233,7 @@ func (c *TenantController) processNextWorkItem() bool {
 		return true
 	}
 
-	utilruntime.HandleError(errors.Wrap(err, fmt.Sprintf("Sync %q failed", key)))
+	utilruntime.HandleError(fmt.Errorf("Sync %q failed: %v", key, err))
 	c.queue.AddRateLimited(key)
 
 	return true
@@ -245,17 +246,30 @@ func (c *TenantController) sync(key string) error {
 	}
 	if !exists {
 		//TODO: delete tenant
+		// delete related clusterrolebinding
+		tenant := strings.Split(key, "/")
+		deleteOptions := &v1.DeleteOptions{
+			TypeMeta: apimetav1.TypeMeta{
+				Kind:       "ClusterRoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1beta1",
+			},
+		}
+		err = c.kclient.Rbac().ClusterRoleBindings().Delete(tenant[1]+"namespace-creater", deleteOptions)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		c.logger.Log("msg", "delete tenant use cloud", "key", key)
 		return nil
 	}
 
 	t := obj.(*v1alpha1.Tenant)
-	if t.Spec.UserName == "" {
-		//TODO: do nothing
-		return nil
+
+	c.logger.Log("msg", "sync tenant", "key", key)
+	err = c.syncTenant(t)
+	if err != nil {
+		return err
 	}
 
-	c.logger.Log("msg", "sync prometheus", "key", key)
-	//TODO: sync tenant
 	return nil
 }
 
@@ -268,7 +282,7 @@ func (c *TenantController) createTPRs() error {
 			Versions: []extensionsobj.APIVersion{
 				{Name: v1alpha1.TPRVersion},
 			},
-			Description: "Managed Prometheus server",
+			Description: "Tpr for tenant",
 		},
 	}
 	tprClient := c.kclient.Extensions().ThirdPartyResources()
@@ -284,6 +298,19 @@ func (c *TenantController) createTPRs() error {
 	err := k8sutil.WaitForTPRReady(c.kclient.CoreV1().RESTClient(), v1alpha1.TPRGroup, v1alpha1.TPRVersion, v1alpha1.TPRTenantName)
 	if err != nil {
 		return err
+	}
+	return nil
+}
+
+func (c *TenantController) syncTenant(tenant *v1alpha1.Tenant) error {
+	return nil
+}
+
+func (c *TenantController) createClusterRoles() error {
+	nsCreater := rbac.GenerateClusterRole()
+	_, err := c.kclient.Rbac().ClusterRoles().Create(nsCreater)
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create namespace creater clusterRole failed: %v", err)
 	}
 	return nil
 }
